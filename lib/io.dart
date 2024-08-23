@@ -8,6 +8,7 @@ import 'package:stream_channel/stream_channel.dart';
 import 'package:uuid/uuid.dart';
 
 import 'src/event_source_transformer.dart';
+import 'src/sse_channel_exception.dart';
 
 final _requestPool = Pool(1000);
 
@@ -29,13 +30,14 @@ class IOSseChannel extends StreamChannelMixin implements SseChannel {
     final client = http.Client();
     _incomingController =
         StreamController<String?>.broadcast(onListen: () async {
+      var queryParameters =
+          Map<String, String>.from(_serverUrl.queryParameters);
+
       final request = http.Request(
         'GET',
         _serverUrl.replace(
-          queryParameters: {
-            'sseClientId': _clientId,
-          },
-        ),
+            queryParameters: queryParameters
+              ..addAll({'sseClientId': _clientId})),
       )..headers['Accept'] = 'text/event-stream';
 
       await client.send(request).then((response) {
@@ -46,8 +48,9 @@ class IOSseChannel extends StreamChannelMixin implements SseChannel {
 
           _onConnected.complete();
         } else {
-          //incomingController.addError(
-          //   SseClientException('Failed to connect to ${uri.toString()}'));
+          _incomingController.addError(SseChannelException(
+              'Failed to connect to ${_serverUrl.toString()}',
+              "${response.statusCode}:${response.reasonPhrase}"));
         }
       });
     }, onCancel: () {
