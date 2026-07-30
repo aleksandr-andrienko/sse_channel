@@ -18,4 +18,7 @@ class HtmlSseChannel extends StreamChannelMixin implements SseChannel {
 
   @override
   Stream get stream => client.stream;
+
+  @override
+  void close() => client.close();
 }
