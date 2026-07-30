@@ -18,6 +18,9 @@ class IOSseChannel extends StreamChannelMixin implements SseChannel {
   int _lastMessageId = -1;
   final Uri _serverUrl;
   final String _clientId;
+  http.Client? _client;
+  StreamSubscription? _responseSubscription;
+  bool _closed = false;
   late final StreamController<String?> _incomingController;
   late final StreamController<String?> _outgoingController;
   final _onConnected = Completer();
@@ -27,9 +30,15 @@ class IOSseChannel extends StreamChannelMixin implements SseChannel {
   )   : _serverUrl = serverUrl,
         _clientId = Uuid().v4(),
         _outgoingController = StreamController<String?>() {
-    final client = http.Client();
+    _client = http.Client();
     _incomingController =
         StreamController<String?>.broadcast(onListen: () async {
+      final client = _client;
+      if (client == null) {
+        // close() ran before the first listener attached.
+        return;
+      }
+
       var queryParameters =
           Map<String, String>.from(_serverUrl.queryParameters);
 
@@ -42,7 +51,9 @@ class IOSseChannel extends StreamChannelMixin implements SseChannel {
 
       await client.send(request).then((response) {
         if (response.statusCode == 200) {
-          response.stream.transform(EventSourceTransformer()).listen((event) {
+          _responseSubscription = response.stream
+              .transform(EventSourceTransformer())
+              .listen((event) {
             _incomingController.sink.add(event.data);
           });
 
@@ -53,9 +64,7 @@ class IOSseChannel extends StreamChannelMixin implements SseChannel {
               "${response.statusCode}:${response.reasonPhrase}"));
         }
       });
-    }, onCancel: () {
-      _incomingController.close();
-    });
+    }, onCancel: close);
 
     _onConnected.future.whenComplete(
       () => _outgoingController.stream.listen(_onOutgoingMessage),
@@ -73,6 +82,32 @@ class IOSseChannel extends StreamChannelMixin implements SseChannel {
 
   @override
   Stream get stream => _incomingController.stream;
+
+  /// Closes the event stream and the underlying HTTP connection.
+  ///
+  /// Cancelling the response subscription and closing the [http.Client] is
+  /// what actually terminates the GET socket. Previously only the stream
+  /// controller was closed, which left the socket ESTABLISHED forever when
+  /// the local network interface disappeared (dropped VPN tunnel).
+  @override
+  void close() {
+    if (_closed) {
+      return;
+    }
+    _closed = true;
+
+    _responseSubscription?.cancel();
+    _responseSubscription = null;
+    _client?.close();
+    _client = null;
+
+    if (!_incomingController.isClosed) {
+      _incomingController.close();
+    }
+    if (!_outgoingController.isClosed) {
+      _outgoingController.close();
+    }
+  }
 
   Future<void> _onOutgoingMessage(String? message) async {
     String? encodedMessage;
